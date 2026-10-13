@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Línea directa · mensajería por código de sesión</title>
+<meta name="description" content="Mensajería efímera: crea un código de sesión, compártelo con una sola persona y conversa durante 3 días." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar__brand">
+    <span class="brand__mark" aria-hidden="true"></span>
+    <span class="brand__name">línea directa</span>
+  </div>
+</header>
+
+<!-- ============ VISTA: INICIO ============ -->
+<main id="view-landing" class="view">
+  <section class="hero">
+    <div class="hero__copy">
+      <h1 class="hero__title">Una conversación.<br>Dos personas. Un código.</h1>
+      <p class="hero__sub">
+        Generás un código y una contraseña, se los pasás a una sola persona, y conversan
+        durante 3 días. Nadie más puede entrar, aunque tenga la contraseña, en cuanto esa
+        persona se conecta desde su dispositivo.
+      </p>
+      <div class="hero__actions">
+        <button id="btn-open-create" class="btn btn--primary">Generar código de sesión</button>
+        <button id="btn-open-join" class="btn btn--ghost">Unirse a una sesión</button>
+      </div>
+      <ul class="hero__rules">
+        <li><span class="rules__dot"></span>Máximo 3 sesiones creadas por persona cada 3 días</li>
+        <li><span class="rules__dot"></span>Cada sesión dura 3 días desde que se crea</li>
+        <li><span class="rules__dot"></span>Solo texto y GIFs por enlace, nunca archivos subidos</li>
+      </ul>
+    </div>
+
+    <div class="hero__panel" aria-hidden="true">
+      <div class="panel__chrome">
+        <span class="chrome__dot"></span><span class="chrome__dot"></span><span class="chrome__dot"></span>
+        <span class="chrome__title">sesion.log</span>
+      </div>
+      <div class="panel__body">
+        <p><span class="tok-key">codigo</span> <span class="tok-op">=</span> <span class="tok-str">"K7M2PQ9X"</span></p>
+        <p><span class="tok-key">expira_en</span> <span class="tok-op">=</span> <span class="tok-num">3</span> <span class="tok-key">dias</span></p>
+        <p><span class="tok-key">participantes</span> <span class="tok-op">=</span> <span class="tok-num">2</span></p>
+        <p class="panel__caret">_</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ VISTA: CHAT ============ -->
+<main id="view-chat" class="view view--hidden">
+  <header class="chatbar">
+    <div class="chatbar__left">
+      <span class="pill pill--code" id="chat-code">········</span>
+      <span class="pill" id="chat-role">—</span>
+    </div>
+    <div class="chatbar__right">
+      <span class="pill pill--time" id="chat-expiry">calculando tiempo restante…</span>
+      <button id="btn-leave" class="btn btn--ghost btn--small">Salir</button>
+    </div>
+  </header>
+
+  <div id="chat-banner" class="chat-banner chat-banner--hidden" role="status"></div>
+
+  <section id="chat-log" class="chat-log" aria-live="polite"></section>
+
+  <form id="chat-form" class="chat-form">
+    <input
+      id="chat-input"
+      class="chat-form__input"
+      type="text"
+      maxlength="2000"
+      placeholder="Escribe un mensaje…"
+      autocomplete="off"
+    />
+    <button type="button" id="btn-gif" class="btn btn--ghost btn--small" title="Enviar un GIF por enlace">GIF</button>
+    <button type="submit" class="btn btn--primary btn--small">Enviar</button>
+  </form>
+</main>
+
+<!-- ============ MODAL: CREAR SESIÓN ============ -->
+<div id="modal-create" class="modal-overlay modal-overlay--hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
+    <h2 id="create-title" class="modal__title">Generar código de sesión</h2>
+
+    <div id="create-step-form">
+      <p class="modal__hint">Elegí una contraseña. La vas a compartir junto con el código con la otra persona, por un canal distinto a este.</p>
+      <label class="field">
+        <span class="field__label">Contraseña (mínimo 6 caracteres)</span>
+        <input id="create-password" type="password" class="field__input" minlength="6" maxlength="128" />
+      </label>
+      <p id="create-error" class="form-error form-error--hidden"></p>
+      <div class="modal__actions">
+        <button id="create-cancel" class="btn btn--ghost" type="button">Cancelar</button>
+        <button id="create-submit" class="btn btn--primary" type="button">Crear sesión</button>
+      </div>
+    </div>
+
+    <div id="create-step-result" class="modal__result modal__result--hidden">
+      <p class="modal__hint">Listo. Compartí estos dos datos con la otra persona:</p>
+      <div class="result-row">
+        <span class="result-row__label">Código</span>
+        <span id="result-code" class="result-row__value"></span>
+      </div>
+      <div class="result-row">
+        <span class="result-row__label">Contraseña</span>
+        <span id="result-password" class="result-row__value"></span>
+      </div>
+      <p class="modal__hint modal__hint--small">La sesión expira en 3 días. No vamos a volver a mostrarte esta contraseña.</p>
+      <div class="modal__actions">
+        <button id="create-enter" class="btn btn--primary" type="button">Entrar al chat</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: UNIRSE ============ -->
+<div id="modal-join" class="modal-overlay modal-overlay--hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="join-title">
+    <h2 id="join-title" class="modal__title">Unirse a una sesión</h2>
+    <p class="modal__hint">Ingresá el código y la contraseña que te compartieron.</p>
+    <label class="field">
+      <span class="field__label">Código de sesión</span>
+      <input id="join-code" type="text" class="field__input field__input--mono" maxlength="12" autocapitalize="characters" />
+    </label>
+    <label class="field">
+      <span class="field__label">Contraseña</span>
+      <input id="join-password" type="password" class="field__input" maxlength="128" />
+    </label>
+    <p id="join-error" class="form-error form-error--hidden"></p>
+    <div class="modal__actions">
+      <button id="join-cancel" class="btn btn--ghost" type="button">Cancelar</button>
+      <button id="join-submit" class="btn btn--primary" type="button">Entrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: ENVIAR GIF ============ -->
+<div id="modal-gif" class="modal-overlay modal-overlay--hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gif-title">
+    <h2 id="gif-title" class="modal__title">Enviar un GIF</h2>
+    <p class="modal__hint">Pegá el enlace directo a un archivo .gif (no se admiten archivos subidos desde tu equipo).</p>
+    <label class="field">
+      <span class="field__label">Enlace https que termine en .gif</span>
+      <input id="gif-url" type="url" class="field__input field__input--mono" placeholder="https://ejemplo.com/imagen.gif" />
+    </label>
+    <p id="gif-error" class="form-error form-error--hidden"></p>
+    <div class="modal__actions">
+      <button id="gif-cancel" class="btn btn--ghost" type="button">Cancelar</button>
+      <button id="gif-submit" class="btn btn--primary" type="button">Enviar GIF</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
