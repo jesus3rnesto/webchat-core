@@ -11,6 +11,9 @@
 
   const POLL_MS = 3000;
   const WARN_BEFORE_EXPIRY_MS = 10 * 60 * 1000; // 10 minutos
+  const SAVED_SESSIONS_KEY = 'savedSessions';
+  const MESSAGES_CACHE_PREFIX = 'chatCache:';
+  const MESSAGES_CACHE_LIMIT = 300;
 
   // ---------- identidad local del dispositivo ----------
   // Un UUID aleatorio guardado en este navegador. El servidor nunca guarda este
@@ -25,14 +28,71 @@
   }
   const deviceId = getDeviceId();
 
+  // ---------- sesiones guardadas en este navegador ----------
+  // Guardamos solo codigo, rol y fecha de expiracion: nunca la contrasena.
+  // Por eso, para volver a entrar, siempre se vuelve a pedir la contrasena.
+  function getSavedSessions() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SAVED_SESSIONS_KEY) || '[]');
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveSessionLocally(code, role, expiresAt) {
+    const list = getSavedSessions().filter((s) => s.code !== code);
+    list.unshift({ code, role, expiresAt });
+    localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(list.slice(0, 20)));
+  }
+
+  function updateSavedExpiry(code, expiresAt) {
+    const list = getSavedSessions();
+    const entry = list.find((s) => s.code === code);
+    if (entry) {
+      entry.expiresAt = expiresAt;
+      localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(list));
+    }
+  }
+
+  function forgetSavedSession(code) {
+    const list = getSavedSessions().filter((s) => s.code !== code);
+    localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(list));
+    localStorage.removeItem(MESSAGES_CACHE_PREFIX + code);
+  }
+
+  // ---------- cache de mensajes por sesion ----------
+  function getCachedMessages(code) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(MESSAGES_CACHE_PREFIX + code) || '[]');
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function appendCachedMessages(code, newMessages) {
+    if (newMessages.length === 0) return;
+    const current = getCachedMessages(code);
+    const merged = current.concat(newMessages).slice(-MESSAGES_CACHE_LIMIT);
+    try {
+      localStorage.setItem(MESSAGES_CACHE_PREFIX + code, JSON.stringify(merged));
+    } catch {
+      // si se llena el almacenamiento local, seguimos sin cache en vez de romper el chat
+    }
+  }
+
   // ---------- estado de la sesión activa ----------
   const state = {
     code: null,
     role: null,
     lastMessageId: 0,
     pollTimer: null,
+    expiryTimer: null,
     expiresAt: null,
     notifiedExpiry: false,
+    isPolling: false,
+    seenIds: new Set(),
   };
 
   // ---------- helpers de DOM ----------
@@ -63,6 +123,48 @@
       throw err;
     }
     return data;
+  }
+
+  // ================= SESIONES GUARDADAS (landing) =================
+  const savedSection = $('saved-sessions');
+  const savedList = $('saved-list');
+
+  function renderSavedSessions() {
+    const list = getSavedSessions().filter((s) => new Date(s.expiresAt).getTime() > Date.now());
+    localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(list));
+
+    savedList.innerHTML = '';
+    if (list.length === 0) {
+      savedSection.classList.add('saved--hidden');
+      return;
+    }
+    savedSection.classList.remove('saved--hidden');
+
+    for (const s of list) {
+      const li = document.createElement('li');
+      li.className = 'saved__item';
+
+      const info = document.createElement('div');
+      info.className = 'saved__info';
+      const code = document.createElement('span');
+      code.className = 'saved__code';
+      code.textContent = s.code;
+      const role = document.createElement('span');
+      role.className = 'saved__role';
+      role.textContent = s.role === 'creator' ? 'persona 1' : 'persona 2';
+      info.appendChild(code);
+      info.appendChild(role);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn--ghost btn--small';
+      btn.textContent = 'Continuar';
+      btn.addEventListener('click', () => openReconnect(s.code));
+
+      li.appendChild(info);
+      li.appendChild(btn);
+      savedList.appendChild(li);
+    }
   }
 
   // ================= MODAL: CREAR =================
@@ -97,7 +199,7 @@
       createStepForm.classList.add('view--hidden');
       createStepResult.classList.remove('view--hidden');
       createStepResult.dataset.code = data.code;
-      createStepResult.dataset.password = password;
+      createStepResult.dataset.expiresAt = data.expiresAt;
     } catch (err) {
       setError($('create-error'), err.message);
     } finally {
@@ -107,11 +209,13 @@
 
   $('create-enter').addEventListener('click', () => {
     const code = createStepResult.dataset.code;
+    const expiresAt = createStepResult.dataset.expiresAt;
+    saveSessionLocally(code, 'creator', expiresAt);
     hide(modalCreate);
-    enterChat(code, 'creator');
+    enterChat(code, 'creator', expiresAt);
   });
 
-  // ================= MODAL: UNIRSE =================
+  // ================= MODAL: UNIRSE (primera vez, con código) =================
   const modalJoin = $('modal-join');
 
   $('btn-open-join').addEventListener('click', () => {
@@ -136,12 +240,50 @@
         method: 'POST',
         body: JSON.stringify({ deviceId, code, password }),
       });
+      saveSessionLocally(code, data.role, data.expiresAt);
       hide(modalJoin);
-      enterChat(code, data.role);
+      enterChat(code, data.role, data.expiresAt);
     } catch (err) {
       setError($('join-error'), err.message);
     } finally {
       $('join-submit').disabled = false;
+    }
+  });
+
+  // ================= MODAL: RECONECTAR (solo contraseña) =================
+  const modalReconnect = $('modal-reconnect');
+  let reconnectCode = null;
+
+  function openReconnect(code) {
+    reconnectCode = code;
+    $('reconnect-code').textContent = code;
+    $('reconnect-password').value = '';
+    setError($('reconnect-error'), '');
+    show(modalReconnect);
+    $('reconnect-password').focus();
+  }
+  $('reconnect-cancel').addEventListener('click', () => hide(modalReconnect));
+
+  $('reconnect-submit').addEventListener('click', async () => {
+    const password = $('reconnect-password').value;
+    if (!password) {
+      setError($('reconnect-error'), 'Ingresá la contraseña.');
+      return;
+    }
+    $('reconnect-submit').disabled = true;
+    try {
+      const data = await api(API.join, {
+        method: 'POST',
+        body: JSON.stringify({ deviceId, code: reconnectCode, password }),
+      });
+      saveSessionLocally(reconnectCode, data.role, data.expiresAt);
+      hide(modalReconnect);
+      enterChat(reconnectCode, data.role, data.expiresAt);
+    } catch (err) {
+      if (err.status === 410) forgetSavedSession(reconnectCode); // la sesion ya expiro
+      setError($('reconnect-error'), err.message);
+    } finally {
+      $('reconnect-submit').disabled = false;
     }
   });
 
@@ -192,6 +334,11 @@
   }
 
   function renderMessage(msg) {
+    // Evita renderizar el mismo mensaje dos veces (por ejemplo si un poll manual
+    // y el poll automático responden casi al mismo tiempo).
+    if (state.seenIds.has(msg.id)) return;
+    state.seenIds.add(msg.id);
+
     const own = msg.sender === state.role;
     const row = document.createElement('div');
     row.className = `msg ${own ? 'msg--own' : 'msg--other'}`;
@@ -239,6 +386,10 @@
       clearInterval(state.pollTimer);
       state.pollTimer = null;
     }
+    if (state.expiryTimer) {
+      clearInterval(state.expiryTimer);
+      state.expiryTimer = null;
+    }
   }
 
   function lockInput(locked) {
@@ -248,19 +399,26 @@
   }
 
   async function poll() {
+    // Si ya hay un poll en vuelo (por ejemplo el automático y uno disparado a mano
+    // tras enviar un mensaje), no lanzamos otro: esa superposición era la causa
+    // de que un mismo mensaje se mostrara duplicado solo para quien lo envió.
+    if (state.isPolling) return;
+    state.isPolling = true;
     try {
       const url = `${API.get}?code=${encodeURIComponent(state.code)}&deviceId=${encodeURIComponent(deviceId)}&after=${state.lastMessageId}`;
       const data = await api(url);
 
       for (const msg of data.messages) {
         renderMessage(msg);
-        state.lastMessageId = msg.id;
+        if (msg.id > state.lastMessageId) state.lastMessageId = msg.id;
       }
       if (data.messages.length > 0) {
+        appendCachedMessages(state.code, data.messages);
         chatLog.scrollTop = chatLog.scrollHeight;
       }
 
       state.expiresAt = data.expiresAt;
+      updateSavedExpiry(state.code, data.expiresAt);
       updateExpiryPill();
 
       if (data.status === 'expired') {
@@ -279,17 +437,32 @@
         stopPolling();
       }
       // otros errores (red intermitente) se ignoran y se reintenta en el siguiente ciclo
+    } finally {
+      state.isPolling = false;
     }
   }
 
-  function enterChat(code, role) {
+  function enterChat(code, role, expiresAt) {
+    stopPolling();
     state.code = code;
     state.role = role;
-    state.lastMessageId = 0;
+    state.expiresAt = expiresAt || null;
     state.notifiedExpiry = false;
+    state.seenIds = new Set();
     clearChatLog();
     lockInput(false);
     setBanner(null);
+
+    // Mostramos de entrada lo que ya tenemos guardado en este navegador,
+    // mientras el primer poll trae lo que haya pasado desde la última vez.
+    const cached = getCachedMessages(code);
+    let maxId = 0;
+    for (const msg of cached) {
+      renderMessage(msg);
+      if (msg.id > maxId) maxId = msg.id;
+    }
+    state.lastMessageId = maxId;
+    if (cached.length > 0) chatLog.scrollTop = chatLog.scrollHeight;
 
     $('chat-code').textContent = code;
     $('chat-role').textContent = role === 'creator' ? 'sos la persona 1' : 'sos la persona 2';
@@ -298,11 +471,11 @@
     viewChat.classList.remove('view--hidden');
 
     requestNotificationPermission();
+    updateExpiryPill();
 
     poll();
-    stopPolling();
     state.pollTimer = setInterval(poll, POLL_MS);
-    setInterval(updateExpiryPill, 15000);
+    state.expiryTimer = setInterval(updateExpiryPill, 15000);
   }
 
   function leaveChat() {
@@ -311,6 +484,7 @@
     state.role = null;
     viewChat.classList.add('view--hidden');
     viewLanding.classList.remove('view--hidden');
+    renderSavedSessions();
   }
 
   $('btn-leave').addEventListener('click', leaveChat);
@@ -374,4 +548,7 @@
       if (e.target === overlay) hide(overlay);
     });
   });
+
+  // ---------- inicio ----------
+  renderSavedSessions();
 })();

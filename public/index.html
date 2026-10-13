@@ -38,6 +38,11 @@
         <li><span class="rules__dot"></span>Cada sesión dura 3 días desde que se crea</li>
         <li><span class="rules__dot"></span>Solo texto y GIFs por enlace, nunca archivos subidos</li>
       </ul>
+
+      <div id="saved-sessions" class="saved saved--hidden">
+        <p class="saved__title">Tus sesiones en este navegador</p>
+        <ul id="saved-list" class="saved__list"></ul>
+      </div>
     </div>
 
     <div class="hero__panel" aria-hidden="true">
@@ -139,6 +144,23 @@
     <div class="modal__actions">
       <button id="join-cancel" class="btn btn--ghost" type="button">Cancelar</button>
       <button id="join-submit" class="btn btn--primary" type="button">Entrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: RECONECTAR (solo contraseña) ============ -->
+<div id="modal-reconnect" class="modal-overlay modal-overlay--hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="reconnect-title">
+    <h2 id="reconnect-title" class="modal__title">Volver a entrar</h2>
+    <p class="modal__hint">Sesión <span id="reconnect-code" class="result-row__value"></span>. Ingresá la contraseña para continuar.</p>
+    <label class="field">
+      <span class="field__label">Contraseña</span>
+      <input id="reconnect-password" type="password" class="field__input" maxlength="128" />
+    </label>
+    <p id="reconnect-error" class="form-error form-error--hidden"></p>
+    <div class="modal__actions">
+      <button id="reconnect-cancel" class="btn btn--ghost" type="button">Cancelar</button>
+      <button id="reconnect-submit" class="btn btn--primary" type="button">Entrar</button>
     </div>
   </div>
 </div>

@@ -40,18 +40,8 @@ export default async function handler(req, res) {
       return res.status(410).json({ error: 'Esa sesion ya expiro.' });
     }
 
-    // El creador tambien puede "unirse" (reconectar) a su propia sesion con este mismo endpoint
-    if (session.creator_device_hash === deviceHash) {
-      const ok = await verifyPassword(password, session.password_hash);
-      if (!ok) return res.status(401).json({ error: 'Contrasena incorrecta.' });
-      return res.status(200).json({ role: 'creator', expiresAt: session.expires_at });
-    }
-
-    // Ya hay una segunda persona registrada: solo esa misma maquina puede volver a entrar
-    if (session.joiner_device_hash) {
-      if (session.joiner_device_hash === deviceHash) {
-        return res.status(200).json({ role: 'joiner', expiresAt: session.expires_at });
-      }
+    // Si ya hay una segunda persona registrada y es otra maquina, no entra aunque tenga la contrasena.
+    if (session.joiner_device_hash && session.joiner_device_hash !== deviceHash) {
       return res.status(403).json({ error: 'Esta sesion ya tiene una segunda persona conectada desde otro dispositivo.' });
     }
 
@@ -59,6 +49,8 @@ export default async function handler(req, res) {
       return res.status(423).json({ error: 'Demasiados intentos fallidos. Intenta de nuevo mas tarde.' });
     }
 
+    // La contrasena se valida siempre, tanto para entrar por primera vez como para
+    // reconectarse desde un dispositivo ya registrado (creador o persona 2).
     const ok = await verifyPassword(password, session.password_hash);
 
     if (!ok) {
@@ -74,10 +66,23 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: 'Contrasena incorrecta.' });
     }
 
-    // Password correcta y nadie ha tomado el lugar de "persona 2": lo registramos a esta maquina
+    await sql`
+      UPDATE sessions SET failed_attempts = 0, locked_until = NULL WHERE id = ${session.id}
+    `;
+
+    if (session.creator_device_hash === deviceHash) {
+      return res.status(200).json({ role: 'creator', expiresAt: session.expires_at });
+    }
+
+    if (session.joiner_device_hash === deviceHash) {
+      return res.status(200).json({ role: 'joiner', expiresAt: session.expires_at });
+    }
+
+    // Nadie ha tomado el lugar de "persona 2" todavia: lo registramos a esta maquina.
+    // La condicion en el WHERE evita que dos dispositivos ganen la carrera al mismo tiempo.
     await sql`
       UPDATE sessions
-      SET joiner_device_hash = ${deviceHash}, status = 'active', failed_attempts = 0, locked_until = NULL
+      SET joiner_device_hash = ${deviceHash}, status = 'active'
       WHERE id = ${session.id} AND joiner_device_hash IS NULL
     `;
 

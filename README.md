@@ -76,6 +76,16 @@ Vercel despliega desde un repositorio de GitHub, GitLab o Bitbucket.
    mismo código y contraseña, el servidor lo va a rechazar porque el lugar de
    "persona 2" ya está ocupado.
 
+## Sesiones guardadas en el navegador
+
+Cada navegador recuerda (en `localStorage`, nunca en el servidor) con qué
+sesiones participó: el código, el rol (persona 1 o 2) y una copia de los
+mensajes, para que al volver a abrir la página los veas de inmediato. Nunca
+se guarda la contraseña: al volver, la landing muestra un botón "Continuar"
+por cada sesión guardada y solo pide la contraseña para reingresar, sin
+tener que volver a escribir el código. El servidor también valida la
+contraseña en cada reingreso (antes solo se validaba la primera vez).
+
 ## Notas de seguridad ya incluidas
 
 - Las contraseñas se guardan con **bcrypt** (hash + salt), nunca en texto plano.
