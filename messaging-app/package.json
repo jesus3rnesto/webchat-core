@@ -1,0 +1,10 @@
+{
+  "name": "mensajeria-segura",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mensajeria efimera por codigo de sesion, con funciones serverless en Vercel y Postgres en Neon.",
+  "dependencies": {
+    "@neondatabase/serverless": "^0.9.5",
+    "bcryptjs": "^2.4.3"
+  }
+}
