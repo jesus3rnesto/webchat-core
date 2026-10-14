@@ -9,6 +9,7 @@ import {
   isValidPassword,
   CONFIG,
 } from '../../lib/security.js';
+import { purgeExpiredSessions } from '../../lib/expiry.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -30,6 +31,14 @@ export default async function handler(req, res) {
   const windowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
 
   try {
+    // Limpieza oportunista: cada vez que alguien crea una sesion, se borran los
+    // mensajes de las sesiones vencidas. Si falla, no impide crear la sesion.
+    try {
+      await purgeExpiredSessions();
+    } catch (err) {
+      console.error('purgeExpiredSessions error:', err);
+    }
+
     const [{ count: byDevice }] = await sql`
       SELECT count(*)::int AS count FROM sessions
       WHERE creator_device_hash = ${deviceHash} AND created_at > ${windowStart}
