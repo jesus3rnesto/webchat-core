@@ -79,15 +79,32 @@ Vercel despliega desde un repositorio de GitHub, GitLab o Bitbucket.
 ## Sesiones guardadas en el navegador
 
 Cada navegador recuerda (en `localStorage`, nunca en el servidor) con qué
-sesiones participó: el código, el rol (persona 1 o 2) y una copia de los
-mensajes, para que al volver a abrir la página los veas de inmediato. Nunca
-se guarda la contraseña: al volver, la landing muestra un botón "Continuar"
-por cada sesión guardada y solo pide la contraseña para reingresar, sin
-tener que volver a escribir el código. El servidor también valida la
-contraseña en cada reingreso (antes solo se validaba la primera vez).
+sesiones participó: el código, el rol (persona 1 o 2) y una copia **cifrada**
+de los mensajes, para que al volver a abrir la página los veas de inmediato.
+La copia se cifra con AES-GCM usando una clave derivada de la contraseña de la
+sesión (PBKDF2, 200 000 iteraciones); esa clave vive solo en memoria mientras
+el chat está abierto. Nunca se guarda la contraseña: al volver, la landing
+muestra un botón "Continuar" por cada sesión guardada y pide la contraseña, que
+sirve tanto para reingresar como para descifrar el historial local. El servidor
+también valida la contraseña en cada reingreso. Al expirar la sesión, el
+historial local y el acceso guardado se borran.
+
+## Borrado de mensajes al expirar
+
+Cuando una sesión vence, el servidor borra todos sus mensajes (apenas alguien
+la consulta, al crear cualquier sesión nueva, y en una limpieza diaria). Un día
+después de vencer se elimina también la fila de la sesión. La limpieza diaria
+usa Vercel Cron (`crons` en `vercel.json`, ejecuta `/api/cron/cleanup` a las
+03:00 UTC). Opcional pero recomendado: agrega la variable de entorno
+`CRON_SECRET` en Vercel (cualquier cadena larga y aleatoria) para que solo
+Vercel pueda llamar a ese endpoint.
 
 ## Notas de seguridad ya incluidas
 
+- El identificador de dispositivo de las consultas GET viaja en la cabecera
+  `X-Device-Id`, no en la URL, para que no quede en los logs de acceso.
+- El historial guardado en el navegador está cifrado (ver arriba) y los mensajes
+  del servidor se borran al expirar la sesión.
 - Las contraseñas se guardan con **bcrypt** (hash + salt), nunca en texto plano.
 - El código de sesión se genera con un generador aleatorio criptográfico
   (`crypto.randomBytes`), no con `Math.random()`.
