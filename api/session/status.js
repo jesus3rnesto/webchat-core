@@ -1,5 +1,6 @@
 import { sql } from '../../lib/db.js';
-import { hashIdentifier, isValidDeviceId, isValidCode } from '../../lib/security.js';
+import { hashIdentifier, isValidDeviceId, isValidCode, getDeviceIdFromHeader } from '../../lib/security.js';
+import { expireSession } from '../../lib/expiry.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -7,7 +8,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Metodo no permitido.' });
   }
 
-  const { code, deviceId } = req.query;
+  const { code } = req.query;
+  const deviceId = getDeviceIdFromHeader(req);
 
   if (!isValidCode(code) || !isValidDeviceId(deviceId)) {
     return res.status(400).json({ error: 'Parametros invalidos.' });
@@ -27,10 +29,9 @@ export default async function handler(req, res) {
     if (!role) return res.status(403).json({ error: 'No perteneces a esta sesion.' });
 
     const expired = new Date(session.expires_at) <= new Date();
-    if (expired && session.status !== 'expired') {
-      await sql`UPDATE sessions SET status = 'expired' WHERE id = ${session.id}`;
-    }
+    if (expired) await expireSession(session);
 
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(200).json({
       role,
       status: expired ? 'expired' : session.status,
