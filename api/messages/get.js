@@ -1,5 +1,6 @@
 import { sql } from '../../lib/db.js';
-import { hashIdentifier, isValidDeviceId, isValidCode } from '../../lib/security.js';
+import { hashIdentifier, isValidDeviceId, isValidCode, getDeviceIdFromHeader } from '../../lib/security.js';
+import { expireSession } from '../../lib/expiry.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -7,7 +8,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Metodo no permitido.' });
   }
 
-  const { code, deviceId, after } = req.query;
+  const { code, after } = req.query;
+  const deviceId = getDeviceIdFromHeader(req);
   const afterId = Number.parseInt(after, 10) || 0;
 
   if (!isValidCode(code) || !isValidDeviceId(deviceId)) {
@@ -26,9 +28,18 @@ export default async function handler(req, res) {
     else if (session.joiner_device_hash === deviceHash) role = 'joiner';
     if (!role) return res.status(403).json({ error: 'No perteneces a esta sesion.' });
 
-    const expired = new Date(session.expires_at) <= new Date();
-    if (expired && session.status !== 'expired') {
-      await sql`UPDATE sessions SET status = 'expired' WHERE id = ${session.id}`;
+    const otherPresent = role === 'creator' ? !!session.joiner_device_hash : true;
+
+    // Sesion vencida: se borran todos sus mensajes y no se devuelve ninguno.
+    if (new Date(session.expires_at) <= new Date()) {
+      await expireSession(session);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({
+        messages: [],
+        status: 'expired',
+        expiresAt: session.expires_at,
+        otherPresent,
+      });
     }
 
     const messages = await sql`
@@ -38,11 +49,12 @@ export default async function handler(req, res) {
       LIMIT 200
     `;
 
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(200).json({
       messages,
-      status: expired ? 'expired' : session.status,
+      status: session.status,
       expiresAt: session.expires_at,
-      otherPresent: role === 'creator' ? !!session.joiner_device_hash : true,
+      otherPresent,
     });
   } catch (err) {
     console.error('messages/get error:', err);
