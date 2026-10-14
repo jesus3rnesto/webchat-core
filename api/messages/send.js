@@ -7,6 +7,7 @@ import {
   isValidGifUrl,
   stripHtml,
 } from '../../lib/security.js';
+import { expireSession } from '../../lib/expiry.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -37,6 +38,7 @@ export default async function handler(req, res) {
     if (!session) return res.status(404).json({ error: 'Sesion no encontrada.' });
 
     if (new Date(session.expires_at) <= new Date() || session.status === 'expired') {
+      await expireSession(session);
       return res.status(410).json({ error: 'La sesion expiro.' });
     }
 
