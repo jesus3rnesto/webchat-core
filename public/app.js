@@ -656,13 +656,4 @@
   renderSavedSessions();
 })();
 
-  // cerrar modales al hacer click fuera del cuadro
-  document.querySelectorAll('.modal-overlay').forEach((overlay) => {
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) hide(overlay);
-    });
-  });
-
-  // ---------- inicio ----------
-  renderSavedSessions();
-})();
+ 
