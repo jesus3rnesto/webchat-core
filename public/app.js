@@ -61,24 +61,96 @@
     localStorage.removeItem(MESSAGES_CACHE_PREFIX + code);
   }
 
-  // ---------- cache de mensajes por sesion ----------
-  function getCachedMessages(code) {
+  // ---------- cache de mensajes por sesion (CIFRADA) ----------
+  // El historial que se guarda en este navegador va cifrado con AES-GCM. La clave se
+  // deriva de la contrasena de la sesion (PBKDF2) y vive solo en memoria mientras el
+  // chat esta abierto: nunca se guarda ni se envia al servidor. Sin la contrasena, lo
+  // que hay en localStorage es ilegible.
+  const CACHE_PBKDF2_ITERATIONS = 200000;
+  const subtle = (window.crypto && window.crypto.subtle) || null;
+  const textEnc = new TextEncoder();
+  const textDec = new TextDecoder();
+
+  function bytesToB64(bytes) {
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  }
+
+  function b64ToBytes(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  async function deriveCacheKey(password, code) {
+    if (!subtle || !password) return null;
+    const base = await subtle.importKey('raw', textEnc.encode(password), 'PBKDF2', false, ['deriveKey']);
+    return subtle.deriveKey(
+      {
+        name: 'PBKDF2',
+        salt: textEnc.encode('webchat-cache:' + code),
+        iterations: CACHE_PBKDF2_ITERATIONS,
+        hash: 'SHA-256',
+      },
+      base,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  async function getCachedMessages(code, key) {
+    if (!key) return [];
+    const raw = localStorage.getItem(MESSAGES_CACHE_PREFIX + code);
+    if (!raw) return [];
     try {
-      const raw = JSON.parse(localStorage.getItem(MESSAGES_CACHE_PREFIX + code) || '[]');
-      return Array.isArray(raw) ? raw : [];
+      const box = JSON.parse(raw);
+      if (!box || box.v !== 2) throw new Error('formato no cifrado o desconocido');
+      const plain = await subtle.decrypt({ name: 'AES-GCM', iv: b64ToBytes(box.iv) }, key, b64ToBytes(box.data));
+      const list = JSON.parse(textDec.decode(plain));
+      return Array.isArray(list) ? list : [];
     } catch {
+      // Formato viejo (texto plano) o ilegible: se descarta. Los mensajes siguen en el
+      // servidor hasta que la sesion expire, asi que el siguiente poll los recupera.
+      localStorage.removeItem(MESSAGES_CACHE_PREFIX + code);
       return [];
     }
   }
 
-  function appendCachedMessages(code, newMessages) {
-    if (newMessages.length === 0) return;
-    const current = getCachedMessages(code);
-    const merged = current.concat(newMessages).slice(-MESSAGES_CACHE_LIMIT);
+  async function appendCachedMessages(code, key, newMessages) {
+    if (!key || newMessages.length === 0) return;
+    const merged = (await getCachedMessages(code, key)).concat(newMessages).slice(-MESSAGES_CACHE_LIMIT);
     try {
-      localStorage.setItem(MESSAGES_CACHE_PREFIX + code, JSON.stringify(merged));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const data = await subtle.encrypt({ name: 'AES-GCM', iv }, key, textEnc.encode(JSON.stringify(merged)));
+      localStorage.setItem(
+        MESSAGES_CACHE_PREFIX + code,
+        JSON.stringify({ v: 2, iv: bytesToB64(iv), data: bytesToB64(new Uint8Array(data)) })
+      );
     } catch {
       // si se llena el almacenamiento local, seguimos sin cache en vez de romper el chat
+    }
+  }
+
+  // Borra caches de sesiones que ya no estan guardadas/vigentes y cualquier cache viejo
+  // que siga en texto plano.
+  function purgeStaleCaches(validCodes) {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(MESSAGES_CACHE_PREFIX)) continue;
+      const code = k.slice(MESSAGES_CACHE_PREFIX.length);
+      let keep = validCodes.has(code);
+      if (keep) {
+        try {
+          const box = JSON.parse(localStorage.getItem(k));
+          keep = !!box && box.v === 2;
+        } catch {
+          keep = false;
+        }
+      }
+      if (!keep) localStorage.removeItem(k);
     }
   }
 
@@ -93,6 +165,7 @@
     notifiedExpiry: false,
     isPolling: false,
     seenIds: new Set(),
+    cacheKey: null, // clave AES derivada de la contrasena; solo en memoria
   };
 
   // ---------- helpers de DOM ----------
@@ -132,6 +205,7 @@
   function renderSavedSessions() {
     const list = getSavedSessions().filter((s) => new Date(s.expiresAt).getTime() > Date.now());
     localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(list));
+    purgeStaleCaches(new Set(list.map((s) => s.code)));
 
     savedList.innerHTML = '';
     if (list.length === 0) {
@@ -171,6 +245,7 @@
   const modalCreate = $('modal-create');
   const createStepForm = $('create-step-form');
   const createStepResult = $('create-step-result');
+  let pendingCreatePassword = null; // solo en memoria, para derivar la clave del historial al entrar
 
   $('btn-open-create').addEventListener('click', () => {
     createStepForm.classList.remove('view--hidden');
@@ -180,7 +255,10 @@
     show(modalCreate);
     $('create-password').focus();
   });
-  $('create-cancel').addEventListener('click', () => hide(modalCreate));
+  $('create-cancel').addEventListener('click', () => {
+    pendingCreatePassword = null;
+    hide(modalCreate);
+  });
 
   $('create-submit').addEventListener('click', async () => {
     const password = $('create-password').value;
@@ -196,6 +274,7 @@
       });
       $('result-code').textContent = data.code;
       $('result-password').textContent = password;
+      pendingCreatePassword = password;
       createStepForm.classList.add('view--hidden');
       createStepResult.classList.remove('view--hidden');
       createStepResult.dataset.code = data.code;
@@ -210,9 +289,12 @@
   $('create-enter').addEventListener('click', () => {
     const code = createStepResult.dataset.code;
     const expiresAt = createStepResult.dataset.expiresAt;
+    const password = pendingCreatePassword;
+    pendingCreatePassword = null;
+    $('result-password').textContent = '';
     saveSessionLocally(code, 'creator', expiresAt);
     hide(modalCreate);
-    enterChat(code, 'creator', expiresAt);
+    enterChat(code, 'creator', expiresAt, password);
   });
 
   // ================= MODAL: UNIRSE (primera vez, con código) =================
@@ -242,7 +324,7 @@
       });
       saveSessionLocally(code, data.role, data.expiresAt);
       hide(modalJoin);
-      enterChat(code, data.role, data.expiresAt);
+      enterChat(code, data.role, data.expiresAt, password);
     } catch (err) {
       setError($('join-error'), err.message);
     } finally {
@@ -278,7 +360,7 @@
       });
       saveSessionLocally(reconnectCode, data.role, data.expiresAt);
       hide(modalReconnect);
-      enterChat(reconnectCode, data.role, data.expiresAt);
+      enterChat(reconnectCode, data.role, data.expiresAt, password);
     } catch (err) {
       if (err.status === 410) forgetSavedSession(reconnectCode); // la sesion ya expiro
       setError($('reconnect-error'), err.message);
@@ -404,27 +486,34 @@
     // de que un mismo mensaje se mostrara duplicado solo para quien lo envió.
     if (state.isPolling) return;
     state.isPolling = true;
+    const code = state.code;
     try {
-      const url = `${API.get}?code=${encodeURIComponent(state.code)}&deviceId=${encodeURIComponent(deviceId)}&after=${state.lastMessageId}`;
-      const data = await api(url);
+      // El deviceId va en una cabecera (no en la URL) para que no quede en los logs.
+      const url = `${API.get}?code=${encodeURIComponent(code)}&after=${state.lastMessageId}`;
+      const data = await api(url, { headers: { 'X-Device-Id': deviceId } });
+      if (state.code !== code) return; // saliste del chat mientras esperabas la respuesta
 
       for (const msg of data.messages) {
         renderMessage(msg);
         if (msg.id > state.lastMessageId) state.lastMessageId = msg.id;
       }
       if (data.messages.length > 0) {
-        appendCachedMessages(state.code, data.messages);
+        await appendCachedMessages(code, state.cacheKey, data.messages);
         chatLog.scrollTop = chatLog.scrollHeight;
       }
 
       state.expiresAt = data.expiresAt;
-      updateSavedExpiry(state.code, data.expiresAt);
+      updateSavedExpiry(code, data.expiresAt);
       updateExpiryPill();
 
       if (data.status === 'expired') {
         setBanner('Esta sesión expiró. Ya no se pueden enviar ni recibir mensajes.');
         lockInput(true);
         stopPolling();
+        // La sesion expiro: el servidor ya borro los mensajes; aqui borramos tambien el
+        // historial cifrado y el acceso guardado de este navegador.
+        forgetSavedSession(code);
+        state.cacheKey = null;
       } else if (state.role === 'creator' && !data.otherPresent) {
         setBanner('Esperando a que la otra persona ingrese el código y la contraseña…');
       } else {
@@ -435,6 +524,7 @@
         setBanner('Perdiste el acceso a esta sesión.');
         lockInput(true);
         stopPolling();
+        if (err.status === 404) forgetSavedSession(code); // la sesion ya no existe en el servidor
       }
       // otros errores (red intermitente) se ignoran y se reintenta en el siguiente ciclo
     } finally {
@@ -442,20 +532,37 @@
     }
   }
 
-  function enterChat(code, role, expiresAt) {
+  async function enterChat(code, role, expiresAt, password) {
     stopPolling();
     state.code = code;
     state.role = role;
     state.expiresAt = expiresAt || null;
     state.notifiedExpiry = false;
     state.seenIds = new Set();
+    state.cacheKey = null;
+    state.lastMessageId = 0;
     clearChatLog();
     lockInput(false);
     setBanner(null);
 
-    // Mostramos de entrada lo que ya tenemos guardado en este navegador,
+    $('chat-code').textContent = code;
+    $('chat-role').textContent = role === 'creator' ? 'sos la persona 1' : 'sos la persona 2';
+
+    viewLanding.classList.add('view--hidden');
+    viewChat.classList.remove('view--hidden');
+
+    // Clave del historial local: se deriva de la contrasena y queda solo en memoria.
+    try {
+      state.cacheKey = await deriveCacheKey(password, code);
+    } catch {
+      state.cacheKey = null; // sin cifrado disponible no se guarda historial local
+    }
+    if (state.code !== code) return; // saliste del chat mientras se derivaba la clave
+
+    // Mostramos de entrada lo que ya tenemos guardado (descifrado) en este navegador,
     // mientras el primer poll trae lo que haya pasado desde la última vez.
-    const cached = getCachedMessages(code);
+    const cached = await getCachedMessages(code, state.cacheKey);
+    if (state.code !== code) return;
     let maxId = 0;
     for (const msg of cached) {
       renderMessage(msg);
@@ -463,12 +570,6 @@
     }
     state.lastMessageId = maxId;
     if (cached.length > 0) chatLog.scrollTop = chatLog.scrollHeight;
-
-    $('chat-code').textContent = code;
-    $('chat-role').textContent = role === 'creator' ? 'sos la persona 1' : 'sos la persona 2';
-
-    viewLanding.classList.add('view--hidden');
-    viewChat.classList.remove('view--hidden');
 
     requestNotificationPermission();
     updateExpiryPill();
@@ -482,6 +583,8 @@
     stopPolling();
     state.code = null;
     state.role = null;
+    state.cacheKey = null;
+    clearChatLog(); // no dejamos mensajes en el DOM al salir
     viewChat.classList.add('view--hidden');
     viewLanding.classList.remove('view--hidden');
     renderSavedSessions();
@@ -541,6 +644,17 @@
       $('gif-submit').disabled = false;
     }
   });
+
+  // cerrar modales al hacer click fuera del cuadro
+  document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) hide(overlay);
+    });
+  });
+
+  // ---------- inicio ----------
+  renderSavedSessions();
+})();
 
   // cerrar modales al hacer click fuera del cuadro
   document.querySelectorAll('.modal-overlay').forEach((overlay) => {
